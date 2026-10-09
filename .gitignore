@@ -1,0 +1,18 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Virtualenvs (root-anchored so no source dir is ever swallowed)
+/.venv*/
+/venv/
+
+# Build artifacts
+/build/
+/dist/
+*.egg-info/
+
+# Fixtures and examples are part of the test suite, never ignored
+!tests/fixtures/**
+!examples/**

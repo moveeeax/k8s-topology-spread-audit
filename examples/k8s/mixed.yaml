@@ -1,0 +1,77 @@
+---
+# Looks strict, enforces nothing: maxSkew 3 with 3 replicas, and a topologyKey
+# that no node in a stock cluster carries.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache
+  namespace: shop
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cache
+  template:
+    metadata:
+      labels:
+        app: cache
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 3
+          topologyKey: topology.example.com/rack
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: cache
+      containers:
+        - name: cache
+          image: redis:7.2-alpine
+---
+# Best-effort only: the scheduler drops this the moment the cluster is tight.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: queue
+  namespace: shop
+spec:
+  replicas: 3
+  serviceName: queue
+  selector:
+    matchLabels:
+      app: queue
+  template:
+    metadata:
+      labels:
+        app: queue
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: queue
+      containers:
+        - name: queue
+          image: rabbitmq:3.13-management
+---
+# A DaemonSet spreads by construction, so replica rules must not fire here.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+    spec:
+      containers:
+        - name: node-exporter
+          image: quay.io/prometheus/node-exporter:v1.8.2

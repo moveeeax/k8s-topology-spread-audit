@@ -1,0 +1,22 @@
+---
+# Three replicas, nothing forcing them apart. The classic false-HA deployment.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: shop
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/example/web:1.4.2
+          ports:
+            - containerPort: 8080

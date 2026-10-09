@@ -1,0 +1,102 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: shop
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+      tier: frontend
+  template:
+    metadata:
+      labels:
+        app: web
+        tier: frontend
+    spec:
+      containers:
+        - name: web
+          image: ghcr.io/example/web:1.4.2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache
+  namespace: shop
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cache
+  template:
+    metadata:
+      labels:
+        app: cache
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 3
+          topologyKey: topology.example.com/rack
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: cache
+      containers:
+        - name: cache
+          image: redis:7.2-alpine
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: queue
+  namespace: shop
+spec:
+  replicas: 3
+  serviceName: queue
+  selector:
+    matchLabels:
+      app: queue
+  template:
+    metadata:
+      labels:
+        app: queue
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: queue
+      containers:
+        - name: queue
+          image: rabbitmq:3.13-management
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest
+  namespace: data
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: ingest
+  template:
+    metadata:
+      labels:
+        app: ingest
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: ingest
+      containers:
+        - name: ingest
+          image: ghcr.io/example/ingest:3.1.0

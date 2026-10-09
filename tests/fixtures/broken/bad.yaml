@@ -1,0 +1,7 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken
+spec:
+  replicas: 2
+  template: [this: is, not: valid

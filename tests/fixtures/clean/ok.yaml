@@ -1,0 +1,100 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: prod
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: api
+      containers:
+        - name: api
+          image: ghcr.io/example/api:2.0.0
+---
+# Single replica: spread is meaningless, must stay silent.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cron-runner
+  namespace: prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cron-runner
+  template:
+    metadata:
+      labels:
+        app: cron-runner
+    spec:
+      containers:
+        - name: runner
+          image: ghcr.io/example/runner:1.0.0
+---
+# Required zone-level anti-affinity is a real spread rule.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+  namespace: prod
+spec:
+  replicas: 3
+  serviceName: etcd
+  selector:
+    matchLabels:
+      app: etcd
+  template:
+    metadata:
+      labels:
+        app: etcd
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: topology.kubernetes.io/zone
+              labelSelector:
+                matchLabels:
+                  app: etcd
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.5.14
+---
+# A ReplicaSet owned by a Deployment must not be reported twice.
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: api-7d9f
+  namespace: prod
+  ownerReferences:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: api
+      controller: true
+      uid: 1f1d5b7e-0000-4000-8000-000000000000
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/example/api:2.0.0
