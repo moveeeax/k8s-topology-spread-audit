@@ -1,7 +1,7 @@
 # k8s-topology-spread-audit
 
 [![ci](https://github.com/moveeeax/k8s-topology-spread-audit/actions/workflows/ci.yml/badge.svg)](https://github.com/moveeeax/k8s-topology-spread-audit/actions/workflows/ci.yml)
-[![python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Three replicas is not high availability. The scheduler spreads pods on a best-effort basis, and
