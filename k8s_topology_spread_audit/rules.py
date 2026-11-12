@@ -83,12 +83,20 @@ def evaluate_workload(
             )
         )
 
+    def counted(message: str) -> str:
+        # Say where the replica count came from when it is not spec.replicas.
+        if workload.replicas_note:
+            return "%s; %s" % (message, workload.replicas_note)
+        return message
+
     if multi and not workload.has_any_spread_rule:
         add(
             "no-spread-rule",
             "high",
-            "%d replicas with no topologySpreadConstraints and no podAntiAffinity: "
-            "the scheduler may place every replica in one failure domain" % replicas,
+            counted(
+                "%d replicas with no topologySpreadConstraints and no podAntiAffinity: "
+                "the scheduler may place every replica in one failure domain" % replicas
+            ),
             suggest_constraints(workload),
         )
     elif multi and not workload.has_constraints and not workload.has_required_anti_affinity:
@@ -96,8 +104,10 @@ def evaluate_workload(
         add(
             "preferred-anti-affinity-only",
             "medium",
-            "%d replicas spread only by preferred podAntiAffinity (%s), which the scheduler "
-            "may ignore under pressure" % (replicas, keys),
+            counted(
+                "%d replicas spread only by preferred podAntiAffinity (%s), which the scheduler "
+                "may ignore under pressure" % (replicas, keys)
+            ),
             suggest_constraints(workload),
         )
 
@@ -137,8 +147,10 @@ def evaluate_workload(
                 add(
                     "unbindable-max-skew",
                     "medium",
-                    "maxSkew %d on %s is >= the %d replicas, so any placement satisfies it"
-                    % (constraint.max_skew, constraint.topology_key, replicas),
+                    counted(
+                        "maxSkew %d on %s is >= the %d replicas, so any placement satisfies it"
+                        % (constraint.max_skew, constraint.topology_key, replicas)
+                    ),
                 )
 
     if zones is not None and zones > 1 and workload.counts_replicas and replicas is not None:
@@ -146,8 +158,10 @@ def evaluate_workload(
             add(
                 "replicas-below-zones",
                 "low",
-                "%d replicas across %d failure domains: at least one domain holds no replica"
-                % (replicas, zones),
+                counted(
+                    "%d replicas across %d failure domains: at least one domain holds no replica"
+                    % (replicas, zones)
+                ),
             )
 
     return findings

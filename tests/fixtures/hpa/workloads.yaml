@@ -1,0 +1,66 @@
+---
+# No replicas field in Git: the HPA owns the count, so spec alone says 1.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: jobs
+spec:
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/example/worker:2.0.1
+---
+# replicas: 1 in Git, HPA floor 2: maxSkew 2 never binds at the floor.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: jobs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 2
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: api
+      containers:
+        - name: api
+          image: ghcr.io/example/api:3.1.0
+---
+# spec.replicas above the HPA floor: auto keeps 5, hpa drops to the floor of 2.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: batch
+  namespace: jobs
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: batch
+  template:
+    metadata:
+      labels:
+        app: batch
+    spec:
+      containers:
+        - name: batch
+          image: ghcr.io/example/batch:1.0.0

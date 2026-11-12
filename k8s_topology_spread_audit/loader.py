@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import sys
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .model import LoadError, SpreadConstraint, Workload
+from .model import REPLICA_SOURCES, Autoscaler, LoadError, SpreadConstraint, Workload
 
 REPLICA_KINDS = frozenset({"Deployment", "StatefulSet", "ReplicaSet", "ReplicationController"})
 DAEMON_KINDS = frozenset({"DaemonSet"})
 SUPPORTED_KINDS = REPLICA_KINDS | DAEMON_KINDS
+HPA_KIND = "HorizontalPodAutoscaler"
 
 MANIFEST_SUFFIXES = (".yaml", ".yml")
 
@@ -126,10 +129,14 @@ def parse_workload(doc: Any, source: str = "-") -> Optional[Workload]:
     name = str(metadata.get("name") or "<unnamed>")
     namespace = str(metadata.get("namespace") or "default")
 
+    status = doc.get("status")
+    status_replicas: Optional[int] = None
     if kind in DAEMON_KINDS:
         replicas: Optional[int] = None
     else:
         replicas = _as_int(spec.get("replicas"), 1)
+        if isinstance(status, dict):
+            status_replicas = _as_int(status.get("replicas"))
 
     required, preferred = _anti_affinity_keys(pod_spec)
     return Workload(
@@ -142,7 +149,82 @@ def parse_workload(doc: Any, source: str = "-") -> Optional[Workload]:
         preferred_anti_affinity_keys=preferred,
         selector_labels=_selector_labels(spec, pod_meta),
         source=source,
+        status_replicas=status_replicas,
     )
+
+
+def parse_hpa(doc: Any, source: str = "-") -> Optional[Autoscaler]:
+    """Build an Autoscaler from a HorizontalPodAutoscaler manifest, or None.
+
+    scaleTargetRef and minReplicas have the same shape in autoscaling/v1 and v2,
+    so both API versions are accepted.
+    """
+    if not isinstance(doc, dict) or doc.get("kind") != HPA_KIND:
+        return None
+    spec = doc.get("spec")
+    if not isinstance(spec, dict):
+        return None
+    target = spec.get("scaleTargetRef")
+    if not isinstance(target, dict) or not target.get("kind") or not target.get("name"):
+        return None
+
+    metadata = doc.get("metadata") or {}
+    # minReplicas defaults to 1; 0 is only legal behind the HPAScaleToZero gate.
+    min_replicas = _as_int(spec.get("minReplicas"), 1)
+    return Autoscaler(
+        name=str(metadata.get("name") or "<unnamed>"),
+        namespace=str(metadata.get("namespace") or "default"),
+        target_kind=str(target["kind"]),
+        target_name=str(target["name"]),
+        min_replicas=max(min_replicas if min_replicas is not None else 1, 0),
+        source=source,
+    )
+
+
+def resolve_replicas(
+    workloads: Sequence[Workload],
+    autoscalers: Sequence[Autoscaler],
+    replicas_source: str = "auto",
+    live: bool = False,
+) -> List[Workload]:
+    """Replace spec.replicas with the count an HPA keeps the workload at.
+
+    The HPA count is minReplicas in manifest mode and max(status.replicas,
+    minReplicas) in live mode. `hpa` always uses it for a targeted workload,
+    `auto` only when it is larger than spec.replicas, `spec` never.
+    """
+    if replicas_source not in REPLICA_SOURCES:
+        raise ValueError("unknown replicas source: %s" % replicas_source)
+    if replicas_source == "spec" or not autoscalers:
+        return list(workloads)
+
+    # Two HPAs on one target is a misconfiguration; take the higher floor so the
+    # pick is deterministic and never hides a workload.
+    by_target: Dict[str, Autoscaler] = {}
+    for hpa in sorted(autoscalers, key=lambda a: (a.target_ref, -a.min_replicas, a.name)):
+        by_target.setdefault(hpa.target_ref, hpa)
+
+    out: List[Workload] = []
+    for workload in workloads:
+        hpa = by_target.get(workload.ref)
+        if hpa is None or workload.replicas is None:
+            out.append(workload)
+            continue
+
+        count = hpa.min_replicas
+        note = "replicas from HPA %s (min %d)" % (hpa.name, hpa.min_replicas)
+        if live and workload.status_replicas is not None and workload.status_replicas > count:
+            count = workload.status_replicas
+            note = "replicas from HPA %s (min %d, status.replicas %d)" % (
+                hpa.name,
+                hpa.min_replicas,
+                workload.status_replicas,
+            )
+
+        if replicas_source == "hpa" or count > workload.replicas:
+            workload = dataclasses.replace(workload, replicas=count, replicas_note=note)
+        out.append(workload)
+    return out
 
 
 def _flatten(doc: Any) -> Iterable[Any]:
@@ -154,8 +236,7 @@ def _flatten(doc: Any) -> Iterable[Any]:
         yield doc
 
 
-def load_documents(text: str, source: str = "-") -> List[Workload]:
-    """Parse a multi-document YAML string into workloads."""
+def _load_objects(text: str, source: str) -> Tuple[List[Workload], List[Autoscaler]]:
     import yaml
 
     try:
@@ -163,13 +244,24 @@ def load_documents(text: str, source: str = "-") -> List[Workload]:
     except yaml.YAMLError as exc:
         raise LoadError("%s: invalid YAML: %s" % (source, exc))
 
-    out: List[Workload] = []
+    workloads: List[Workload] = []
+    autoscalers: List[Autoscaler] = []
     for doc in docs:
         for item in _flatten(doc):
             workload = parse_workload(item, source=source)
             if workload is not None:
-                out.append(workload)
-    return out
+                workloads.append(workload)
+                continue
+            hpa = parse_hpa(item, source=source)
+            if hpa is not None:
+                autoscalers.append(hpa)
+    return workloads, autoscalers
+
+
+def load_documents(text: str, source: str = "-", replicas_source: str = "auto") -> List[Workload]:
+    """Parse a multi-document YAML string into workloads."""
+    workloads, autoscalers = _load_objects(text, source)
+    return resolve_replicas(workloads, autoscalers, replicas_source)
 
 
 def manifest_files(root: str) -> List[str]:
@@ -186,24 +278,35 @@ def manifest_files(root: str) -> List[str]:
     return found
 
 
-def load_manifests(root: str) -> List[Workload]:
-    """Read every YAML manifest under `root` (file or directory)."""
+def load_manifests(root: str, replicas_source: str = "auto") -> List[Workload]:
+    """Read every YAML manifest under `root` (file or directory).
+
+    An HPA may live in a different file from the workload it scales, so HPAs
+    are matched only after every file has been read.
+    """
     files = manifest_files(root)
     if not files:
         raise LoadError("no YAML manifests found under %s" % root)
-    out: List[Workload] = []
+    workloads: List[Workload] = []
+    autoscalers: List[Autoscaler] = []
     for path in files:
         try:
             with open(path, "r") as handle:
                 text = handle.read()
         except OSError as exc:
             raise LoadError("cannot read %s: %s" % (path, exc))
-        out.extend(load_documents(text, source=path))
-    return out
+        found, hpas = _load_objects(text, source=path)
+        workloads.extend(found)
+        autoscalers.extend(hpas)
+    return resolve_replicas(workloads, autoscalers, replicas_source)
 
 
-def load_live(namespace: Optional[str], all_namespaces: bool) -> Tuple[List[Workload], List[str], int]:
-    """Read workloads and node topology from the current kube context.
+def load_live(
+    namespace: Optional[str],
+    all_namespaces: bool,
+    replicas_source: str = "auto",
+) -> Tuple[List[Workload], List[str], int]:
+    """Read workloads, their HPAs and node topology from the current kube context.
 
     Returns (workloads, topology keys present on nodes, distinct zone count).
     """
@@ -239,6 +342,24 @@ def load_live(namespace: Optional[str], all_namespaces: bool) -> Tuple[List[Work
     except Exception as exc:  # pragma: no cover - needs a cluster
         raise LoadError("Kubernetes API call failed: %s" % exc)
 
+    hpa_items: List[Any] = []
+    if replicas_source != "spec":
+        autoscaling = client.AutoscalingV2Api()
+        try:
+            hpa_items = listing(
+                autoscaling.list_horizontal_pod_autoscaler_for_all_namespaces,
+                autoscaling.list_namespaced_horizontal_pod_autoscaler,
+            ).items
+        except Exception as exc:
+            # `hpa` was asked for explicitly, so a missing HPA view is fatal there.
+            # `auto` keeps working for service accounts without HPA read access.
+            if replicas_source == "hpa":
+                raise LoadError("cannot list HorizontalPodAutoscalers: %s" % exc)
+            print(
+                "warning: cannot list HorizontalPodAutoscalers (%s); using spec.replicas" % exc,
+                file=sys.stderr,
+            )
+
     workloads: List[Workload] = []
     for kind, result in groups:
         for obj in result.items:
@@ -247,6 +368,15 @@ def load_live(namespace: Optional[str], all_namespaces: bool) -> Tuple[List[Work
             workload = parse_workload(doc, source="cluster")
             if workload is not None:
                 workloads.append(workload)
+
+    autoscalers: List[Autoscaler] = []
+    for obj in hpa_items:
+        doc = client.ApiClient().sanitize_for_serialization(obj)
+        doc["kind"] = HPA_KIND
+        hpa = parse_hpa(doc, source="cluster")
+        if hpa is not None:
+            autoscalers.append(hpa)
+    workloads = resolve_replicas(workloads, autoscalers, replicas_source, live=True)
 
     node_keys = set()
     zones = set()
