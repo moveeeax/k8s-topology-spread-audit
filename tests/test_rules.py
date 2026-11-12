@@ -125,6 +125,34 @@ def test_min_replicas_threshold_is_honoured():
     assert rules_for(workload(replicas=4), min_replicas=4) == ["no-spread-rule"]
 
 
+def test_hpa_note_is_appended_to_replica_count_findings():
+    note = "replicas from HPA web-hpa (min 3)"
+    w = workload(replicas=3, replicas_note=note)
+    [finding] = evaluate_workload(w)
+    assert finding.rule == "no-spread-rule"
+    assert finding.message.endswith("; " + note)
+
+    skew = workload(
+        replicas=3,
+        replicas_note=note,
+        constraints=[SpreadConstraint(3, "topology.kubernetes.io/zone", "DoNotSchedule")],
+    )
+    findings = evaluate_workload(skew, zones=4)
+    assert [f.rule for f in findings] == ["unbindable-max-skew", "replicas-below-zones"]
+    assert all(f.message.endswith(note) for f in findings)
+
+
+def test_hpa_note_is_not_added_to_findings_that_ignore_replicas():
+    w = workload(
+        replicas=3,
+        replicas_note="replicas from HPA web-hpa (min 3)",
+        constraints=[SpreadConstraint(1, "rack", "ScheduleAnyway")],
+    )
+    findings = evaluate_workload(w)
+    assert sorted(f.rule for f in findings) == ["schedule-anyway", "unknown-topology-key"]
+    assert all("HPA" not in f.message for f in findings)
+
+
 def test_suggestion_uses_the_workloads_own_labels():
     w = workload(selector_labels={"tier": "frontend", "app": "web"})
     block = suggest_constraints(w)

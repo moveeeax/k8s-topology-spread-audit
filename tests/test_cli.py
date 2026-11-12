@@ -11,6 +11,7 @@ from k8s_topology_spread_audit.rules import evaluate
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 CLEAN = os.path.join(FIXTURES, "clean")
 DIRTY = os.path.join(FIXTURES, "dirty")
+HPA = os.path.join(FIXTURES, "hpa")
 
 
 def test_exit_zero_on_a_clean_tree(capsys):
@@ -92,6 +93,47 @@ def test_zones_flag_adds_the_low_severity_coverage_finding(capsys):
     assert any(f["rule"] == "replicas-below-zones" for f in payload["findings"])
 
 
+def test_hpa_floor_surfaces_a_workload_spec_replicas_hides(capsys):
+    assert main(["--manifests", HPA, "--json"]) == 1
+    findings = json.loads(capsys.readouterr().out)["findings"]
+    worker = [f for f in findings if f["name"] == "worker"]
+    assert [f["rule"] for f in worker] == ["no-spread-rule"]
+    assert worker[0]["message"].startswith("3 replicas")
+    assert worker[0]["message"].endswith("replicas from HPA worker-hpa (min 3)")
+
+
+def test_replicas_source_spec_restores_the_old_count(capsys):
+    assert main(["--manifests", HPA, "--replicas-source", "spec", "--json"]) == 1
+    findings = json.loads(capsys.readouterr().out)["findings"]
+    assert [(f["name"], f["rule"]) for f in findings] == [("batch", "no-spread-rule")]
+
+
+def test_replicas_source_hpa_uses_the_floor_over_a_larger_spec(capsys):
+    assert main(["--manifests", HPA, "--replicas-source", "hpa", "--json"]) == 1
+    findings = json.loads(capsys.readouterr().out)["findings"]
+    batch = [f for f in findings if f["name"] == "batch"]
+    assert batch[0]["message"].startswith("2 replicas")
+
+
+def test_replicas_source_is_passed_to_live_mode(capsys, monkeypatch):
+    import k8s_topology_spread_audit.cli as cli_module
+
+    seen = {}
+
+    def fake_live(namespace, all_namespaces, replicas_source="auto"):
+        seen["source"] = replicas_source
+        return [], ["kubernetes.io/hostname"], 0
+
+    monkeypatch.setattr(cli_module, "load_live", fake_live)
+    assert main(["-A", "--replicas-source", "hpa"]) == 0
+    assert seen["source"] == "hpa"
+
+
+def test_replicas_source_rejects_unknown_values():
+    with pytest.raises(SystemExit):
+        main(["--manifests", HPA, "--replicas-source", "status"])
+
+
 def test_min_replicas_must_be_positive(capsys):
     assert main(["--manifests", DIRTY, "--min-replicas", "0"]) == 2
     assert "--min-replicas" in capsys.readouterr().err
@@ -115,7 +157,7 @@ def test_live_mode_reports_a_clear_error_without_a_cluster(capsys, monkeypatch):
     import k8s_topology_spread_audit.cli as cli_module
     from k8s_topology_spread_audit.model import LoadError
 
-    def boom(namespace, all_namespaces):
+    def boom(namespace, all_namespaces, **kwargs):
         raise LoadError("cannot load a kube config: no context")
 
     monkeypatch.setattr(cli_module, "load_live", boom)

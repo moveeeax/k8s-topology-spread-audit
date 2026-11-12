@@ -7,6 +7,10 @@ from typing import Dict, List, Optional
 
 SEVERITIES = ("low", "medium", "high")
 
+#: Where a workload's replica count comes from: spec.replicas only, the HPA
+#: that targets it, or whichever of the two is larger.
+REPLICA_SOURCES = ("spec", "hpa", "auto")
+
 
 def severity_rank(severity: str) -> int:
     try:
@@ -42,6 +46,10 @@ class Workload:
     preferred_anti_affinity_keys: List[str] = field(default_factory=list)
     selector_labels: Dict[str, str] = field(default_factory=dict)
     source: str = "-"
+    #: status.replicas as reported by the cluster; only trusted in live mode.
+    status_replicas: Optional[int] = None
+    #: Set when the replica count came from an HPA, e.g. "replicas from HPA web-hpa (min 3)".
+    replicas_note: Optional[str] = None
 
     @property
     def ref(self) -> str:
@@ -71,6 +79,22 @@ class Workload:
             or self.has_required_anti_affinity
             or self.has_preferred_anti_affinity
         )
+
+
+@dataclass(frozen=True)
+class Autoscaler:
+    """A HorizontalPodAutoscaler, reduced to the workload it scales and its floor."""
+
+    name: str
+    namespace: str
+    target_kind: str
+    target_name: str
+    min_replicas: int = 1
+    source: str = "-"
+
+    @property
+    def target_ref(self) -> str:
+        return "%s/%s/%s" % (self.namespace, self.target_kind, self.target_name)
 
 
 @dataclass

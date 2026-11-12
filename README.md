@@ -28,13 +28,14 @@ Audit a directory of manifests, no cluster required:
 
 ```console
 $ k8s-topology-spread-audit --manifests ./examples/k8s
-SEVERITY  RULE                          NAMESPACE  KIND         NAME   DETAIL
-HIGH      unknown-topology-key          shop       Deployment   cache  topologyKey 'topology.example.com/rack' is not present on any node, so the constraint groups every pod into one domain and enforces nothing
-HIGH      no-spread-rule                shop       Deployment   web    3 replicas with no topologySpreadConstraints and no podAntiAffinity: the scheduler may place every replica in one failure domain
-MEDIUM    unbindable-max-skew           shop       Deployment   cache  maxSkew 3 on topology.example.com/rack is >= the 3 replicas, so any placement satisfies it
-MEDIUM    preferred-anti-affinity-only  shop       StatefulSet  queue  3 replicas spread only by preferred podAntiAffinity (kubernetes.io/hostname), which the scheduler may ignore under pressure
+SEVERITY  RULE                          NAMESPACE  KIND         NAME    DETAIL
+HIGH      unknown-topology-key          shop       Deployment   cache   topologyKey 'topology.example.com/rack' is not present on any node, so the constraint groups every pod into one domain and enforces nothing
+HIGH      no-spread-rule                shop       Deployment   web     3 replicas with no topologySpreadConstraints and no podAntiAffinity: the scheduler may place every replica in one failure domain
+HIGH      no-spread-rule                shop       Deployment   worker  3 replicas with no topologySpreadConstraints and no podAntiAffinity: the scheduler may place every replica in one failure domain; replicas from HPA worker-hpa (min 3)
+MEDIUM    unbindable-max-skew           shop       Deployment   cache   maxSkew 3 on topology.example.com/rack is >= the 3 replicas, so any placement satisfies it
+MEDIUM    preferred-anti-affinity-only  shop       StatefulSet  queue   3 replicas spread only by preferred podAntiAffinity (kubernetes.io/hostname), which the scheduler may ignore under pressure
 
-4 finding(s) across 5 workload(s): 2 high, 2 medium, 0 low.
+5 finding(s) across 6 workload(s): 3 high, 2 medium, 0 low.
 $ echo $?
 1
 ```
@@ -70,6 +71,30 @@ topologySpreadConstraints:
 The suggestion uses the workload's own selector labels, and the test suite pastes it back in to
 prove the finding goes away.
 
+## Autoscaled workloads
+
+A Deployment managed by a HorizontalPodAutoscaler usually has `replicas: 1` or no `replicas`
+field in Git, while it runs several pods in production. Read on its own, `spec.replicas` would
+skip it as single-replica. The auditor therefore also reads `HorizontalPodAutoscaler` objects
+(`autoscaling/v2` or `v1`), matches `scaleTargetRef` to the workload in the same namespace, and
+audits the count the HPA keeps it at:
+
+- manifest mode: `minReplicas` (1 when unset), from any file under `--manifests`;
+- live mode: `max(status.replicas, minReplicas)`.
+
+`--replicas-source` picks the count:
+
+| Value | Count audited |
+| --- | --- |
+| `auto` (default) | the larger of `spec.replicas` and the HPA count |
+| `hpa` | the HPA count whenever an HPA targets the workload, even below `spec.replicas` |
+| `spec` | `spec.replicas` only, HPAs are not read |
+
+When the count came from an HPA, the finding says so, e.g.
+`... failure domain; replicas from HPA worker-hpa (min 3)`. In live mode HPAs are listed with
+the `autoscaling/v2` API; if the service account cannot list them, `auto` prints a warning and
+falls back to `spec.replicas`, while `hpa` exits with a load error.
+
 ## Rules
 
 | Rule | Severity | Fires when |
@@ -83,14 +108,14 @@ prove the finding goes away.
 
 `k8s-topology-spread-audit --list-rules` prints the same catalogue.
 
-What it deliberately does not flag: single-replica workloads, a required pod anti-affinity at the
-zone level, DaemonSets (they spread by construction, though their `topologyKey`s are still
-validated), and ReplicaSets owned by a Deployment.
+What it deliberately does not flag: single-replica workloads (after the HPA floor is applied), a
+required pod anti-affinity at the zone level, DaemonSets (they spread by construction, though
+their `topologyKey`s are still validated), and ReplicaSets owned by a Deployment.
 
 ## How it works
 
 Both inputs — YAML files and the live API — are flattened into the same small `Workload` record:
-replica count, `topologySpreadConstraints`, and the `topologyKey`s of required and preferred pod
+replica count (already raised to the HPA floor where one applies), `topologySpreadConstraints`, and the `topologyKey`s of required and preferred pod
 anti-affinity. Every rule is then a pure function of that record, which is why the whole suite runs
 offline against fixture manifests and the output ordering is deterministic (severity first, then
 namespace, kind, name, rule).
@@ -102,6 +127,7 @@ namespace, kind, name, rule).
 -n, --namespace NS          cluster namespace to audit (default: default)
 -A, --all-namespaces        audit every namespace
 --min-replicas N            only audit workloads with at least N replicas (default: 2)
+--replicas-source {spec,hpa,auto}  where the replica count comes from (default: auto)
 --known-topology-keys KEYS  extra topologyKeys your nodes carry, added to the standard set
 --zones N                   failure-domain count for manifest mode
 --ignore GLOB               skip workloads by name glob (repeatable)

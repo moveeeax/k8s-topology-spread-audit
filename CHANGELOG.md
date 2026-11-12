@@ -16,6 +16,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
+- Read `HorizontalPodAutoscaler` objects and audit an autoscaled workload at its HPA floor:
+  `minReplicas` in manifest mode, `max(status.replicas, minReplicas)` in live mode. Findings
+  name the HPA, e.g. "replicas from HPA web-hpa (min 3)". New flag
+  `--replicas-source spec|hpa|auto` (default `auto`, the larger of `spec.replicas` and the HPA
+  count). Live mode now lists HPAs; without that permission `auto` warns and falls back to
+  `spec.replicas`.
 - Dependabot configuration for GitHub Actions and pip.
 
 ## [0.1.0] - 2026-10-09

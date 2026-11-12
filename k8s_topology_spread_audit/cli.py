@@ -8,7 +8,7 @@ from typing import List, Optional, Sequence
 
 from . import __version__
 from .loader import load_live, load_manifests
-from .model import LoadError
+from .model import REPLICA_SOURCES, LoadError
 from .report import render_json, render_markdown, render_table
 from .rules import DEFAULT_KNOWN_TOPOLOGY_KEYS, RULES, evaluate
 
@@ -34,6 +34,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
         metavar="N",
         help="only audit workloads with at least N replicas (default: 2)",
+    )
+    parser.add_argument(
+        "--replicas-source",
+        choices=REPLICA_SOURCES,
+        default="auto",
+        help="replica count to audit: spec.replicas, the HPA that targets the workload "
+        "(minReplicas; max(status.replicas, minReplicas) in live mode), or auto, the larger "
+        "of the two (default: auto)",
     )
     parser.add_argument(
         "--known-topology-keys",
@@ -107,9 +115,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         if args.manifests:
-            workloads = load_manifests(args.manifests)
+            workloads = load_manifests(args.manifests, replicas_source=args.replicas_source)
         else:
-            workloads, node_keys, live_zones = load_live(args.namespace, args.all_namespaces)
+            workloads, node_keys, live_zones = load_live(
+                args.namespace, args.all_namespaces, replicas_source=args.replicas_source
+            )
             # Node labels are ground truth, so they replace the default key list.
             if node_keys:
                 known = tuple(node_keys)
